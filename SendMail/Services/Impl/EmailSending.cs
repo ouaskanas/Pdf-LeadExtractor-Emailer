@@ -31,7 +31,7 @@ namespace SendMail.Services.Impl
             using (var smtp = new SmtpClient())
             {
                 smtp.Connect("smtp.gmail.com", 587, SecureSocketOptions.StartTls);
-                smtp.Authenticate(new SaslMechanismOAuth2(sendRequestDto.SenderEmail, sendRequestDto.AccessToken));
+                smtp.Authenticate(new SaslMechanismOAuth2(sendRequestDto.SenderEmail, sendRequestDto.AppPassword));
 
                 foreach (var lead in sendRequestDto.SelectedLeads)
                 {
