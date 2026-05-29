@@ -1,14 +1,12 @@
-﻿using SendMail.Models;
-
-namespace SendMail.Dtos
+﻿namespace SendMail.Dtos
 {
-    public class SendRequestDto
+    public class SendCampaignPayload
     {
         public string SenderEmail { get; set; }
         public string AccessToken { get; set; }
         public string SubjectTemplate { get; set; }
         public string BodyTemplate { get; set; }
-        public List<PdfFormat> SelectedLeads { get; set; }
-        public string AttachmentPath { get; set; }
+        public string SelectedLeadsJson { get; set; }
+        public IFormFile AttachedFile { get; set; }
     }
 }

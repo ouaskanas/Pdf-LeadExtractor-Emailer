@@ -1,11 +1,12 @@
-﻿using Microsoft.Extensions.Logging;
-using SendMail.Dtos;
-using SendMail.Models;
-using SendMail.Exceptions;
 using System;
-using System.Net;
-using System.Net.Mail;
+using System.IO;
 using System.Threading;
+using Microsoft.Extensions.Logging;
+using MailKit.Net.Smtp;
+using MailKit.Security;
+using MimeKit;
+using SendMail.Dtos;
+using SendMail.Exceptions;
 using SendMail.Services.IServices;
 
 namespace SendMail.Services.Impl
@@ -21,63 +22,71 @@ namespace SendMail.Services.Impl
             _emailValidator = emailValidator;
         }
 
-        public void ProcessAndSend(SendRequestDto sendRequestDto)
+        public int ProcessAndSend(SendRequestDto sendRequestDto)
         {
-            _logger.LogInformation("Initialisation de la connexion SMTP pour le compte : {SenderEmail}", sendRequestDto.SenderEmail);
+            _logger.LogInformation("Initialisation SMTP pour : {SenderEmail}", sendRequestDto.SenderEmail);
 
-            using (SmtpClient smtpServer = new SmtpClient("smtp.gmail.com"))
+            int sent = 0;
+
+            using (var smtp = new SmtpClient())
             {
-                smtpServer.Port = 587;
-                smtpServer.Credentials = new NetworkCredential(sendRequestDto.SenderEmail, sendRequestDto.AppPassword);
-                smtpServer.EnableSsl = true;
+                smtp.Connect("smtp.gmail.com", 587, SecureSocketOptions.StartTls);
+                smtp.Authenticate(new SaslMechanismOAuth2(sendRequestDto.SenderEmail, sendRequestDto.AccessToken));
 
                 foreach (var lead in sendRequestDto.SelectedLeads)
                 {
                     if (string.IsNullOrWhiteSpace(lead.EMAIL)) continue;
 
-                    _logger.LogInformation("[~] Analyse anti-bounce via le script Python pour : {Email}", lead.EMAIL);
+                    _logger.LogInformation("[~] Validation anti-bounce pour : {Email}", lead.EMAIL);
 
-                    var isRealEmail = _emailValidator.IsEmailValid(lead.EMAIL);
-
-                    if (isRealEmail)
+                    if (!_emailValidator.IsEmailValid(lead.EMAIL))
                     {
-                        try
-                        {
-                            string finalSubject = sendRequestDto.SubjectTemplate
-                                .Replace("{SOCIETE}", lead.SOCIETE)
-                                .Replace("{VILLE}", lead.VILLE);
-
-                            string finalBody = sendRequestDto.BodyTemplate
-                                .Replace("{PERSONNE}", lead.PERSONNE)
-                                .Replace("{SOCIETE}", lead.SOCIETE)
-                                .Replace("{ACTIVITE}", lead.ACTIVITE)
-                                .Replace("{SERVICE}", lead.SERVICE);
-
-                            MailMessage mail = new MailMessage();
-                            mail.From = new MailAddress(sendRequestDto.SenderEmail, "Votre Nom / Entreprise");
-                            mail.To.Add(lead.EMAIL);
-                            mail.Subject = finalSubject;
-                            mail.Body = finalBody;
-
-                            smtpServer.Send(mail);
-                            _logger.LogInformation("[SUCCESS] Mail envoyé avec succès à : {Email}", lead.EMAIL);
-
-                            int delay = new Random().Next(10000, 22000);
-                            _logger.LogInformation("[*] Pause anti-block de {Delay}ms pour préserver le quota...", delay);
-                            Thread.Sleep(delay);
-                        }
-                        catch (Exception ex)
-                        {
-                            var smtpException = new SmtpSendingException("Échec de la transmission SMTP lors de l'envoi du message.", lead.EMAIL, ex);
-                            _logger.LogError(ex, "[ERROR] Échec critique d'envoi pour {Email}. Cause : {Message}", smtpException.TargetEmail, ex.Message);
-                        }
+                        _logger.LogWarning("[-] {Email} rejeté (bounce détecté).", lead.EMAIL);
+                        continue;
                     }
-                    else
+
+                    try
                     {
-                        _logger.LogWarning("[-] {Email} a été rejeté (Bounce détecté par l'analyseur Python).", lead.EMAIL);
+                        string finalSubject = sendRequestDto.SubjectTemplate
+                            .Replace("{SOCIETE}", lead.SOCIETE ?? "")
+                            .Replace("{VILLE}", lead.VILLE ?? "");
+
+                        string finalBody = sendRequestDto.BodyTemplate
+                            .Replace("{PERSONNE}", lead.PERSONNE ?? "")
+                            .Replace("{SOCIETE}", lead.SOCIETE ?? "")
+                            .Replace("{ACTIVITE}", lead.ACTIVITE ?? "")
+                            .Replace("{SERVICE}", lead.SERVICE ?? "");
+
+                        var message = new MimeMessage();
+                        message.From.Add(new MailboxAddress("Votre Nom / Entreprise", sendRequestDto.SenderEmail));
+                        message.To.Add(new MailboxAddress("", lead.EMAIL));
+                        message.Subject = finalSubject;
+
+                        var bodyBuilder = new BodyBuilder { TextBody = finalBody };
+
+                        if (!string.IsNullOrEmpty(sendRequestDto.AttachmentPath) && File.Exists(sendRequestDto.AttachmentPath))
+                            bodyBuilder.Attachments.Add(sendRequestDto.AttachmentPath);
+
+                        message.Body = bodyBuilder.ToMessageBody();
+
+                        smtp.Send(message);
+                        sent++;
+                        _logger.LogInformation("[SUCCESS] Mail envoyé à : {Email} ({Sent} total)", lead.EMAIL, sent);
+
+                        int delay = new Random().Next(5000, 12000);
+                        _logger.LogInformation("[*] Pause anti-block de {Delay}ms...", delay);
+                        Thread.Sleep(delay);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "[ERROR] Échec d'envoi pour {Email} : {Message}", lead.EMAIL, ex.Message);
                     }
                 }
+
+                smtp.Disconnect(true);
             }
+
+            return sent;
         }
     }
 }

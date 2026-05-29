@@ -1,10 +1,240 @@
 ﻿@page
-@model IndexModel
 @{
-    ViewData["Title"] = "Home page";
+    ViewData["Title"] = "Assistant de Campagne";
 }
 
-<div class="text-center">
-    <h1 class="display-4">Welcome</h1>
-    <p>Learn about <a href="https://learn.microsoft.com/aspnet/core">building Web apps with ASP.NET Core</a>.</p>
+<div class="container mt-5">
+    <div class="card shadow-lg border-0">
+        <div class="card-header bg-dark text-white text-center py-3">
+            <h3 class="mb-0">✨ Assistant d'Email Marketing Automatisé</h3>
+        </div>
+        <div class="card-body p-4">
+            
+            <div id="step1" class="wizard-step">
+                <h4 class="border-bottom pb-2 mb-3">🔑 Étape 1 : Connexion Google SMTP</h4>
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label class="form-label font-weight-bold">Votre adresse Gmail</label>
+                        <input type="email" id="senderEmail" class="form-control" placeholder="exemple@gmail.com">
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label class="form-label font-weight-bold">Mot de passe d'application Google</label>
+                        <input type="password" id="appPassword" class="form-control" placeholder="abcd efgh ijkl mnop">
+                    </div>
+                </div>
+                <button type="button" class="btn btn-primary" id="btnValidateSmtp">Vérifier l'autorisation Google</button>
+            </div>
+
+            <div id="step2" class="wizard-step d-none">
+                <h4 class="border-bottom pb-2 mb-3">📋 Étape 2 : Constitution de la Queue de Diffusion</h4>
+                
+                <div class="row mb-4">
+                    <div class="col-md-6 border-right">
+                        <h5>Option A : Ajouter un e-mail manuellement</h5>
+                        <div class="input-group input-group-sm">
+                            <input type="email" id="manualEmail" class="form-control" placeholder="contact@entreprise.com">
+                            <button class="btn btn-secondary" id="btnAddManual">Insérer à la queue</button>
+                        </div>
+                    </div>
+                    <div class="col-md-6 pl-md-4">
+                        <h5>Option B : Extraire depuis le fichier PDF</h5>
+                        <button class="btn btn-info w-100" id="btnLoadPdf">⚡ Parser la base de données PDF (100 leads)</button>
+                    </div>
+                </div>
+
+                <div class="card bg-light mb-3">
+                    <div class="card-header d-flex justify-content-between align-items-center bg-secondary text-white py-2">
+                        <span class="small font-weight-bold">Contacts chargés (<span id="countIndicator">0</span>)</span>
+                        <button class="btn btn-sm btn-light py-0 px-2" id="btnToggleAll">Tout cocher/décocher</button>
+                    </div>
+                    <div class="table-responsive" style="max-height: 350px;">
+                        <table class="table table-sm table-striped mb-0 text-dark small" id="queueTable">
+                            <thead>
+                                <tr>
+                                    <th class="text-center" style="width: 5%">Sél.</th>
+                                    <th>Email</th>
+                                    <th>Société / Contexte</th>
+                                </tr>
+                            </thead>
+                            <tbody id="queueBody">
+                                <tr><td colspan="3" class="text-center text-muted py-3">Aucun contact dans la queue actuelle.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <button type="button" class="btn btn-success" id="goToStep3" disabled>Suivant : Rédaction du Template</button>
+            </div>
+
+            <div id="step3" class="wizard-step d-none">
+                <h4 class="border-bottom pb-2 mb-3">📝 Étape 3 : Objet, Corps & Pièce jointe</h4>
+                <div class="mb-3">
+                    <label class="form-label font-weight-bold">Sujet du mail</label>
+                    <input type="text" id="subjectTemplate" class="form-control" value="Opportunité de collaboration - {SOCIETE}">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label font-weight-bold">Corps de l'e-mail (Modifiable)</label>
+                    <textarea id="bodyTemplate" class="form-control" rows="6">Bonjour {PERSONNE},
+
+J'ai analysé votre activité dans le secteur {ACTIVITE}. Est-ce que votre service {SERVICE} basé à {VILLE} serait ouvert à un échange ?
+
+Veuillez trouver ci-joint mon CV.
+
+Cordialement.</textarea>
+                </div>
+                
+                <div class="mb-4 card p-3 bg-light border-dashed">
+                    <label class="form-label font-weight-bold text-primary">📎 Joindre un document ou votre CV</label>
+                    <input type="file" id="attachedFile" class="form-control-file">
+                    <small class="text-muted">Le fichier sera injecté en tant que pièce jointe native lors des envois.</small>
+                </div>
+
+                <div class="d-flex justify-content-between">
+                    <button type="button" class="btn btn-outline-secondary" id="backToStep2">Retour</button>
+                    <button type="button" class="btn btn-danger btn-lg" id="btnLaunchCampaign">🚀 Lancer l'envoi de la campagne</button>
+                </div>
+            </div>
+
+        </div>
+    </div>
 </div>
+
+@section Scripts {
+    <script>
+        let globalQueue = [];
+        let selectedState = {};
+
+        document.getElementById('btnValidateSmtp').addEventListener('click', function() {
+            const email = document.getElementById('senderEmail').value.trim();
+            const pass = document.getElementById('appPassword').value.trim();
+
+            if(!email || !pass) { alert("Veuillez remplir les deux champs d'authentification."); return; }
+            
+            this.disabled = true; this.innerText = "Validation en cours chez Google...";
+
+            let formData = new FormData();
+            formData.append("email", email);
+            formData.append("password", pass);
+
+            fetch('/EmailAutomation/ValidateSmtpCredentials', { method: 'POST', body: formData })
+            .then(res => res.json())
+            .then(res => {
+                if(res.success) {
+                    alert(res.message);
+                    document.getElementById('step1').classList.add('d-none');
+                    document.getElementById('step2').classList.remove('d-none');
+                } else {
+                    alert(res.message);
+                    this.disabled = false; this.innerText = "Vérifier l'autorisation Google";
+                }
+            });
+        });
+
+        function refreshTable() {
+            const tbody = document.getElementById('queueBody');
+            document.getElementById('countIndicator').innerText = globalQueue.length;
+            
+            if(globalQueue.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="3" class="text-center text-muted py-3">Aucun contact dans la queue actuelle.</td></tr>`;
+                document.getElementById('goToStep3').disabled = true;
+                return;
+            }
+            
+            document.getElementById('goToStep3').disabled = false;
+            tbody.innerHTML = '';
+            
+            globalQueue.forEach((lead, idx) => {
+                const isChecked = selectedState[lead.email] !== false ? 'checked' : '';
+                tbody.innerHTML += `
+                    <tr>
+                        <td class="text-center"><input type="checkbox" ${isChecked} onchange="toggleState('${lead.email}', this.checked)"></td>
+                        <td><strong>${lead.email}</strong></td>
+                        <td>${lead.societe || 'Saisie Manuelle'} - ${lead.ville || 'N/A'}</td>
+                    </tr>
+                `;
+            });
+        }
+
+        function toggleState(email, checked) { selectedState[email] = checked; }
+
+        document.getElementById('btnAddManual').addEventListener('click', function() {
+            const input = document.getElementById('manualEmail');
+            const email = input.value.trim();
+            if(!email || !email.includes('@@')) { alert("Email invalide."); return; }
+            
+            if(globalQueue.some(l => l.email === email)) { alert("Cet e-mail est déjà dans la liste."); return; }
+
+            globalQueue.push({ email: email, societe: 'Saisie Directe', ville: 'En ligne', personne: 'Responsable', activite: 'Général', service: 'RH' });
+            selectedState[email] = true;
+            input.value = '';
+            refreshTable();
+        });
+
+        document.getElementById('btnLoadPdf').addEventListener('click', function() {
+            this.disabled = true; this.innerText = "⏳ Extraction structurelle du PDF en cours...";
+            
+            fetch('/EmailAutomation/LoadPdfLeads', { method: 'POST' })
+            .then(res => res.json())
+            .then(res => {
+                if(res.success) {
+                    res.data.forEach(lead => {
+                        if(!globalQueue.some(l => l.email === lead.email)) {
+                            globalQueue.push(lead);
+                            selectedState[lead.email] = true;
+                        }
+                    });
+                    refreshTable();
+                } else { alert(res.message); }
+                this.disabled = false; this.innerText = "⚡ Parser la base de données PDF (100 leads)";
+            });
+        });
+
+        let stateFlag = true;
+        document.getElementById('btnToggleAll').addEventListener('click', () => {
+            stateFlag = !stateFlag;
+            globalQueue.forEach(l => selectedState[l.email] = stateFlag);
+            refreshTable();
+        });
+
+        document.getElementById('goToStep3').addEventListener('click', () => {
+            document.getElementById('step2').classList.add('d-none');
+            document.getElementById('step3').classList.remove('d-none');
+        });
+
+        document.getElementById('backToStep2').addEventListener('click', () => {
+            document.getElementById('step3').classList.add('d-none');
+            document.getElementById('step2').classList.remove('d-none');
+        });
+
+        document.getElementById('btnLaunchCampaign').addEventListener('click', function() {
+            const finalLeads = globalQueue.filter(l => selectedState[l.email] !== false);
+            if(finalLeads.length === 0) { alert("Aucun contact sélectionné pour l'envoi."); return; }
+
+            if(confirm(`Êtes-vous sûr de vouloir lancer la campagne sur ces ${finalLeads.length} contacts ?`)) {
+                this.disabled = true; this.innerText = "⏳ Envoi du package au serveur C#...";
+
+                let payload = new FormData();
+                payload.append("SenderEmail", document.getElementById('senderEmail').value);
+                payload.append("AppPassword", document.getElementById('appPassword').value);
+                payload.append("SubjectTemplate", document.getElementById('subjectTemplate').value);
+                payload.append("BodyTemplate", document.getElementById('bodyTemplate').value);
+                payload.append("SelectedLeadsJson", JSON.stringify(finalLeads));
+
+                const fileInput = document.getElementById('attachedFile');
+                if(fileInput.files.length > 0) {
+                    payload.append("AttachedFile", fileInput.files[0]);
+                }
+
+                fetch('/EmailAutomation/SubmitCampaign', { method: 'POST', body: payload })
+                .then(res => res.json())
+                .then(data => {
+                    alert(data.message);
+                    location.reload();
+                })
+                .catch(() => {
+                    alert("Campagne transmise. Surveillez les boucles et les logs C#.");
+                    location.reload();
+                });
+            }
+        });
+    </script>
+}

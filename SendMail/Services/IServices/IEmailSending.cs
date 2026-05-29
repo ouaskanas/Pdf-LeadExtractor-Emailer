@@ -4,6 +4,6 @@ namespace SendMail.Services.IServices
 {
     public interface IEmailSending
     {
-        public void ProcessAndSend(SendRequestDto sendRequestDto);
+        public int ProcessAndSend(SendRequestDto sendRequestDto);
     }
 }
