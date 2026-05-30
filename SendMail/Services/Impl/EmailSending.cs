@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using Microsoft.Extensions.Logging;
@@ -6,7 +7,8 @@ using MailKit.Net.Smtp;
 using MailKit.Security;
 using MimeKit;
 using SendMail.Dtos;
-using SendMail.Exceptions;
+using SendMail.Models;
+using SendMail.Services;
 using SendMail.Services.IServices;
 
 namespace SendMail.Services.Impl
@@ -22,18 +24,16 @@ namespace SendMail.Services.Impl
             _emailValidator = emailValidator;
         }
 
-        public int ProcessAndSend(SendRequestDto sendRequestDto)
+        public int ProcessAndSend(SendRequestDto dto)
         {
-            _logger.LogInformation("Initialisation SMTP pour : {SenderEmail}", sendRequestDto.SenderEmail);
+            _logger.LogInformation("Début de campagne pour : {SenderEmail}", dto.SenderEmail);
 
             int sent = 0;
+            SmtpClient smtp = null;
 
-            using (var smtp = new SmtpClient())
+            try
             {
-                smtp.Connect("smtp.gmail.com", 587, SecureSocketOptions.StartTls);
-                smtp.Authenticate(new SaslMechanismOAuth2(sendRequestDto.SenderEmail, sendRequestDto.AccessToken));
-
-                foreach (var lead in sendRequestDto.SelectedLeads)
+                foreach (var lead in dto.SelectedLeads ?? new List<PdfFormat>())
                 {
                     if (string.IsNullOrWhiteSpace(lead.EMAIL)) continue;
 
@@ -45,28 +45,24 @@ namespace SendMail.Services.Impl
                         continue;
                     }
 
+                    if (smtp == null)
+                    {
+                        smtp = new SmtpClient();
+                        smtp.Connect("smtp.gmail.com", 587, SecureSocketOptions.StartTls);
+                        smtp.Authenticate(new SaslMechanismOAuth2(dto.SenderEmail, dto.AccessToken));
+                    }
+
                     try
                     {
-                        string finalSubject = sendRequestDto.SubjectTemplate
-                            .Replace("{SOCIETE}", lead.SOCIETE ?? "")
-                            .Replace("{VILLE}", lead.VILLE ?? "");
-
-                        string finalBody = sendRequestDto.BodyTemplate
-                            .Replace("{PERSONNE}", lead.PERSONNE ?? "")
-                            .Replace("{SOCIETE}", lead.SOCIETE ?? "")
-                            .Replace("{ACTIVITE}", lead.ACTIVITE ?? "")
-                            .Replace("{SERVICE}", lead.SERVICE ?? "")
-                            .Replace("{VILLE}", lead.VILLE ?? "");
-
                         var message = new MimeMessage();
-                        message.From.Add(new MailboxAddress(sendRequestDto.SenderName, sendRequestDto.SenderEmail));
+                        message.From.Add(new MailboxAddress(dto.SenderName, dto.SenderEmail));
                         message.To.Add(new MailboxAddress("", lead.EMAIL));
-                        message.Subject = finalSubject;
+                        message.Subject = TemplateEngine.ApplySubject(dto.SubjectTemplate, lead);
 
-                        var bodyBuilder = new BodyBuilder { TextBody = finalBody };
+                        var bodyBuilder = new BodyBuilder { TextBody = TemplateEngine.ApplyBody(dto.BodyTemplate, lead) };
 
-                        if (!string.IsNullOrEmpty(sendRequestDto.AttachmentPath) && File.Exists(sendRequestDto.AttachmentPath))
-                            bodyBuilder.Attachments.Add(sendRequestDto.AttachmentPath);
+                        if (!string.IsNullOrEmpty(dto.AttachmentPath) && File.Exists(dto.AttachmentPath))
+                            bodyBuilder.Attachments.Add(dto.AttachmentPath);
 
                         message.Body = bodyBuilder.ToMessageBody();
 
@@ -74,9 +70,7 @@ namespace SendMail.Services.Impl
                         sent++;
                         _logger.LogInformation("[SUCCESS] Mail envoyé à : {Email} ({Sent} total)", lead.EMAIL, sent);
 
-                        int delay = new Random().Next(5000, 12000);
-                        _logger.LogInformation("[*] Pause anti-block de {Delay}ms...", delay);
-                        Thread.Sleep(delay);
+                        Thread.Sleep(new Random().Next(5000, 12000));
                     }
                     catch (Exception ex)
                     {
@@ -84,7 +78,11 @@ namespace SendMail.Services.Impl
                     }
                 }
 
-                smtp.Disconnect(true);
+                smtp?.Disconnect(true);
+            }
+            finally
+            {
+                smtp?.Dispose();
             }
 
             return sent;
