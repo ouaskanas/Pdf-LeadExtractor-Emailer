@@ -11,18 +11,20 @@
         <div class="card-body p-4">
             
             <div id="step1" class="wizard-step">
-                <h4 class="border-bottom pb-2 mb-3">🔑 Étape 1 : Connexion Google SMTP</h4>
+                <h4 class="border-bottom pb-2 mb-3">🔑 Étape 1 : Connexion Google OAuth2</h4>
                 <div class="row">
                     <div class="col-md-6 mb-3">
                         <label class="form-label font-weight-bold">Votre adresse Gmail</label>
                         <input type="email" id="senderEmail" class="form-control" placeholder="exemple@gmail.com">
                     </div>
                     <div class="col-md-6 mb-3">
-                        <label class="form-label font-weight-bold">Mot de passe d'application Google</label>
-                        <input type="password" id="appPassword" class="form-control" placeholder="abcd efgh ijkl mnop">
+                        <label class="form-label font-weight-bold">Nom affiché à l'expéditeur</label>
+                        <input type="text" id="senderDisplayName" class="form-control" placeholder="Anas Ouaskar">
                     </div>
                 </div>
-                <button type="button" class="btn btn-primary" id="btnValidateSmtp">Vérifier l'autorisation Google</button>
+                <button type="button" class="btn btn-primary" id="btnAuthorizeGoogle">
+                    Se connecter avec Google
+                </button>
             </div>
 
             <div id="step2" class="wizard-step d-none">
@@ -102,29 +104,35 @@ Cordialement.</textarea>
     <script>
         let globalQueue = [];
         let selectedState = {};
+        let accessToken = null;
+        let senderName = null;
 
-        document.getElementById('btnValidateSmtp').addEventListener('click', function() {
+        document.getElementById('btnAuthorizeGoogle').addEventListener('click', function() {
             const email = document.getElementById('senderEmail').value.trim();
-            const pass = document.getElementById('appPassword').value.trim();
+            if(!email) { alert("Entrez votre adresse Gmail."); return; }
 
-            if(!email || !pass) { alert("Veuillez remplir les deux champs d'authentification."); return; }
-            
-            this.disabled = true; this.innerText = "Validation en cours chez Google...";
+            localStorage.removeItem('oauth2_result');
 
-            let formData = new FormData();
-            formData.append("email", email);
-            formData.append("password", pass);
+            window.open(
+                '/EmailAutomation/OAuth2Authorize?email=' + encodeURIComponent(email),
+                'oauth2',
+                'width=520,height=620,scrollbars=yes'
+            );
 
-            fetch('/EmailAutomation/ValidateSmtpCredentials', { method: 'POST', body: formData })
-            .then(res => res.json())
-            .then(res => {
-                if(res.success) {
-                    alert(res.message);
+            window.addEventListener('storage', function handler(event) {
+                if(event.key !== 'oauth2_result') return;
+                window.removeEventListener('storage', handler);
+
+                const data = JSON.parse(event.newValue);
+                localStorage.removeItem('oauth2_result');
+
+                if(data.type === 'oauth2_success') {
+                    accessToken = data.token;
+                    senderName = document.getElementById('senderDisplayName').value.trim() || data.name;
                     document.getElementById('step1').classList.add('d-none');
                     document.getElementById('step2').classList.remove('d-none');
-                } else {
-                    alert(res.message);
-                    this.disabled = false; this.innerText = "Vérifier l'autorisation Google";
+                } else if(data.type === 'oauth2_error') {
+                    alert('Erreur OAuth2 : ' + data.message);
                 }
             });
         });
@@ -214,7 +222,8 @@ Cordialement.</textarea>
 
                 let payload = new FormData();
                 payload.append("SenderEmail", document.getElementById('senderEmail').value);
-                payload.append("AppPassword", document.getElementById('appPassword').value);
+                payload.append("SenderName", senderName);
+                payload.append("AccessToken", accessToken);
                 payload.append("SubjectTemplate", document.getElementById('subjectTemplate').value);
                 payload.append("BodyTemplate", document.getElementById('bodyTemplate').value);
                 payload.append("SelectedLeadsJson", JSON.stringify(finalLeads));

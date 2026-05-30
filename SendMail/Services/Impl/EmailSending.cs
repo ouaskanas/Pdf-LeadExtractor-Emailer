@@ -31,7 +31,7 @@ namespace SendMail.Services.Impl
             using (var smtp = new SmtpClient())
             {
                 smtp.Connect("smtp.gmail.com", 587, SecureSocketOptions.StartTls);
-                smtp.Authenticate(new SaslMechanismOAuth2(sendRequestDto.SenderEmail, sendRequestDto.AppPassword));
+                smtp.Authenticate(new SaslMechanismOAuth2(sendRequestDto.SenderEmail, sendRequestDto.AccessToken));
 
                 foreach (var lead in sendRequestDto.SelectedLeads)
                 {
@@ -55,10 +55,11 @@ namespace SendMail.Services.Impl
                             .Replace("{PERSONNE}", lead.PERSONNE ?? "")
                             .Replace("{SOCIETE}", lead.SOCIETE ?? "")
                             .Replace("{ACTIVITE}", lead.ACTIVITE ?? "")
-                            .Replace("{SERVICE}", lead.SERVICE ?? "");
+                            .Replace("{SERVICE}", lead.SERVICE ?? "")
+                            .Replace("{VILLE}", lead.VILLE ?? "");
 
                         var message = new MimeMessage();
-                        message.From.Add(new MailboxAddress("Votre Nom / Entreprise", sendRequestDto.SenderEmail));
+                        message.From.Add(new MailboxAddress(sendRequestDto.SenderName, sendRequestDto.SenderEmail));
                         message.To.Add(new MailboxAddress("", lead.EMAIL));
                         message.Subject = finalSubject;
 

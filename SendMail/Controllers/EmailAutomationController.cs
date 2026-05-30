@@ -1,13 +1,13 @@
-﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System;
-using System.IO;
-using System.Text.Json;
 using System.Collections.Generic;
-using MailKit.Net.Smtp;
-using MailKit.Security;
-using MimeKit;
+using System.IO;
+using System.Net.Http;
+using System.Text.Json;
+using System.Threading.Tasks;
 using SendMail.Dtos;
 using SendMail.Models;
 using SendMail.Services.IServices;
@@ -20,58 +20,94 @@ namespace SendMail.Controllers
         private readonly IEmailSending _emailSending;
         private readonly IWebHostEnvironment _env;
         private readonly ILogger<EmailAutomationController> _logger;
+        private readonly IConfiguration _config;
+        private readonly IHttpClientFactory _httpClientFactory;
 
         public EmailAutomationController(
             IPdfSerializer pdfParser,
             IEmailSending emailSending,
             IWebHostEnvironment env,
-            ILogger<EmailAutomationController> logger)
+            ILogger<EmailAutomationController> logger,
+            IConfiguration config,
+            IHttpClientFactory httpClientFactory)
         {
             _pdfParser = pdfParser;
             _emailSending = emailSending;
             _env = env;
             _logger = logger;
+            _config = config;
+            _httpClientFactory = httpClientFactory;
         }
 
-        public IActionResult Index()
+        public IActionResult Index() => View();
+
+        [HttpGet]
+        public IActionResult OAuth2Authorize(string email)
         {
-            return View();
+            var clientId = _config["Google:ClientId"];
+            var redirectUri = _config["Google:RedirectUri"];
+
+            var url = "https://accounts.google.com/o/oauth2/v2/auth" +
+                      $"?client_id={Uri.EscapeDataString(clientId)}" +
+                      $"&redirect_uri={Uri.EscapeDataString(redirectUri)}" +
+                      $"&response_type=code" +
+                      $"&scope={Uri.EscapeDataString("https://mail.google.com/ profile email")}" +
+                      $"&access_type=offline" +
+                      $"&prompt=consent" +
+                      $"&login_hint={Uri.EscapeDataString(email ?? "")}" +
+                      $"&state={Uri.EscapeDataString(email ?? "")}";
+
+            return Redirect(url);
         }
 
-        [HttpPost]
-        public IActionResult ValidateSmtpCredentials(string email, string password)
+        [HttpGet]
+        public async Task<IActionResult> OAuth2Callback(string code, string state, string error = null)
         {
-            if (string.IsNullOrEmpty(email) || string.IsNullOrEmpty(password))
-                return Json(new { success = false, message = "Identifiants incomplets." });
-
-            try
+            if (!string.IsNullOrEmpty(error))
             {
-                using (var smtp = new SmtpClient())
-                {
-                    smtp.Connect("smtp.gmail.com", 587, SecureSocketOptions.StartTls);
-                    smtp.Authenticate(email, password);
-
-                    var message = new MimeMessage();
-                    message.From.Add(new MailboxAddress("SendMail Test", email));
-                    message.To.Add(new MailboxAddress("", email));
-                    message.Subject = "SendMail – Test de connexion SMTP";
-                    message.Body = new TextPart("plain") { Text = "Votre configuration Gmail SMTP est opérationnelle." };
-
-                    smtp.Send(message);
-                    smtp.Disconnect(true);
-                }
-
-                _logger.LogInformation("[SMTP CHECK] Authentification réussie pour {Email}", email);
-                return Json(new { success = true, message = "Connexion validée ! Un email de test a été envoyé à votre adresse." });
+                var errPayload = JsonSerializer.Serialize(new { type = "oauth2_error", message = error });
+                return Content($"<script>window.opener?.postMessage({errPayload}, window.location.origin); window.close();</script>", "text/html");
             }
-            catch (Exception ex)
+
+            var clientId = _config["Google:ClientId"];
+            var clientSecret = _config["Google:ClientSecret"];
+            var redirectUri = _config["Google:RedirectUri"];
+
+            var http = _httpClientFactory.CreateClient();
+            var response = await http.PostAsync("https://oauth2.googleapis.com/token", new FormUrlEncodedContent(new Dictionary<string, string>
             {
-                _logger.LogWarning("[SMTP CHECK] Échec pour {Email} : {Msg}", email, ex.Message);
-                string hint = ex.Message.Contains("5.7.8") || ex.Message.Contains("BadCredentials")
-                    ? "Identifiants refusés par Gmail. Utilisez un mot de passe d'application (myaccount.google.com → Sécurité → Mots de passe des applications). La vérification en 2 étapes doit être activée."
-                    : $"Connexion SMTP échouée : {ex.Message}";
-                return Json(new { success = false, message = hint });
+                ["code"] = code,
+                ["client_id"] = clientId,
+                ["client_secret"] = clientSecret,
+                ["redirect_uri"] = redirectUri,
+                ["grant_type"] = "authorization_code"
+            }));
+
+            var json = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(json);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var errMsg = doc.RootElement.TryGetProperty("error_description", out var ed) ? ed.GetString() : "Token exchange failed";
+                var errPayload = JsonSerializer.Serialize(new { type = "oauth2_error", message = errMsg });
+                return Content($"<script>localStorage.setItem('oauth2_result', JSON.stringify({errPayload})); window.close();</script>", "text/html");
             }
+
+            var accessToken = doc.RootElement.GetProperty("access_token").GetString();
+            var email = state;
+
+            var userInfoResponse = await http.SendAsync(new HttpRequestMessage(HttpMethod.Get, "https://www.googleapis.com/oauth2/v3/userinfo")
+            {
+                Headers = { { "Authorization", $"Bearer {accessToken}" } }
+            });
+            var userInfoJson = await userInfoResponse.Content.ReadAsStringAsync();
+            using var userInfoDoc = JsonDocument.Parse(userInfoJson);
+            var senderName = userInfoDoc.RootElement.TryGetProperty("name", out var n) ? n.GetString() : email;
+
+            _logger.LogInformation("[OAUTH2] Token obtenu pour {Email} ({Name})", email, senderName);
+
+            var payload = JsonSerializer.Serialize(new { type = "oauth2_success", email, token = accessToken, name = senderName });
+            return Content($"<script>localStorage.setItem('oauth2_result', JSON.stringify({payload})); window.close();</script>", "text/html");
         }
 
         [HttpPost]
@@ -92,24 +128,26 @@ namespace SendMail.Controllers
             if (payload == null || string.IsNullOrEmpty(payload.SelectedLeadsJson))
                 return BadRequest(new { message = "Données de campagne incomplètes." });
 
+            if (string.IsNullOrEmpty(payload.AccessToken))
+                return BadRequest(new { message = "Token OAuth2 manquant. Veuillez vous authentifier avec Google." });
+
             var leads = JsonSerializer.Deserialize<List<PdfFormat>>(payload.SelectedLeadsJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+
             string savedAttachmentPath = null;
             if (payload.AttachedFile != null && payload.AttachedFile.Length > 0)
             {
                 string tempFolder = Path.Combine(_env.ContentRootPath, "TempAttachments");
                 Directory.CreateDirectory(tempFolder);
-
                 savedAttachmentPath = Path.Combine(tempFolder, payload.AttachedFile.FileName);
                 using (var stream = new FileStream(savedAttachmentPath, FileMode.Create))
-                {
                     payload.AttachedFile.CopyTo(stream);
-                }
             }
 
             var sendRequest = new SendRequestDto
             {
                 SenderEmail = payload.SenderEmail,
-                AppPassword = payload.AppPassword,
+                SenderName = payload.SenderName,
+                AccessToken = payload.AccessToken,
                 SubjectTemplate = payload.SubjectTemplate,
                 BodyTemplate = payload.BodyTemplate,
                 SelectedLeads = leads,
